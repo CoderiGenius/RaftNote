@@ -100,3 +100,54 @@
     -  Each candidate restarts its randomized election timeout at the start of an election, and it waits for that timeout to elapse before starting the next election
     -  this reduces the likelihood of another split vote in the new election
 ##### 5.3 Log replication
+- Once a leader has been elected, it begins servicing client requests. Each client requestcontainsa commandto be executed by the replicated state machines
+-  The leader appends the command to its log as ***a new entry***
+-  then issues AppendEntries RPCs in parallel to each of the other servers to replicate the entry
+-  When the entry has been safely replicated (as described below), the leader applies the entry to its state machine and returns the result of that execution to the client
+- If followers crash or run slowly, or if network packets are lost, the leader retries AppendEntries RPCs indeﬁnitely (even after it has responded to the client) until all followers eventually store all log entries.
+- Logs are organized as shown in Figure 6.
+- The term numbers in log entries are used to detect inconsistencies between logs and to ensure some of the properties in Figure 3.
+- Each log entry also has an integer index identifying its position in the log.
+![](https://i.loli.net/2020/02/24/eWgwolKcFb18TLy.png)
+
+###### 5.3.2 when to commit
+- The leader decides when it is safe to apply a log entry to the state machines，such an entry is called ***committed.***
+-  Raft guarantees that committed entries are durable and will eventually be executed by all of the available state machines.
+-  A log entry is committed once the leader that created the entry has replicated it on a majority of the servers
+- This also commits all preceding entries in the leader’s log, including entries created by previous leaders
+-  The leader keeps track of the highest index it knows to be committed, and it includes that index in future AppendEntries RPCs (including heartbeats) so that the other servers eventually ﬁnd out
+-  Once a follower learns that a log entry is committed, it applies the entry to its local state machine (in log order).
+- Raft maintains the following properties, which together constitute the Log Matching Property in Figure 3:
+  -  If two entries in different logs have the same index and term, then they store the same command
+      - The property follows from the fact that a leader creates at most one entry with a given log index in a given term, and log entries ***never change their position*** in the log.
+  -  If two entries in different logs have the same index and term, then the logs are identical in all preceding entries.
+      -  The second property is guaranteed by a simple consistency check performed by AppendEntries. When sending an AppendEntries RPC, the leader ***includes the index and term of the entry*** in its log
+      - (?) If the follower does not ﬁnd an entry in its log with the same index and term, then it refuses the new entries.
+###### 5.3.3 Leader fail
+-  leader crashes can leave the logs inconsistent (the old leader may not have fully replicated all of the entries in its log).
+    - In Raft, the leader handles inconsistencies by forcing the followers’ logs to duplicate its own
+    - This means that conﬂicting entries in follower logs will be overwritten with entries from the leader’s log
+    - To bring a follower’s log into consistency with its own, the leader must ﬁnd the latest log entry **where the two logs agree**, delete any entries in the follower’s log **after that point**, and send the follower all of the leader’s entries after that point
+      - **Question: If this mean that the entries after that will be abandoned?**
+    -  All of these actions happen in response to the consistency check performed by AppendEntries RPCs.
+    -  The leader maintains a **nextIndex** for each follower, which is the index of the next log entry the leader will send to that follower
+    -  When a leader ﬁrst comes to power, it initializes all nextIndex values to the index just after the last one in its log (11 in Figure 7).
+        - If a follower’s log is inconsistent with the leader’s, the AppendEntries consistency check will fail in the next AppendEntries RPC
+        - After a rejection,the leader decrementsnextIndexand retries the AppendEntries RPC
+        - Eventually nextIndex will reach a point where the leader and follower logs match
+        -  When this happens,AppendEntrieswill succeed, which removes any conﬂicting entries in the follower’s log and appends entries from the leader’s log (if any).
+        -  Once AppendEntries succeeds, the follower’slog is consistentwith the leader’s, and it will remain that way for the rest of the term.
+##### 5.4 safety
+- A follower might be unavailable while the leader commits several log entries, then it could be elected leader and overwrite these entries with new ones;
+- as a result, different state machines might execute different command sequences.
+###### 5.4.1 election Restriction
+-  Raft uses a simpler approach where it guarantees that all the committed entries from previous terms are present on each new leader from the moment of its election
+-  This means that log entries only ﬂow in one direction, from leaders to followers, and leaders never overwrite existing entries in their logs.
+- Raft uses the voting processto preventa candidate from winning an election unless its log contains all committed entries
+  - A candidate must contact a majority of the cluster in order to be elected, which means that every committed entry must be present in ***at least one of those servers***
+  -  If the candidate’s log is at least as up-to-date as any other log in that majority then it will hold all the committed entries
+  - The RequestVote RPC implements this restriction:**the RPC includes information about the candidate’s log, and the voter denies its vote if its own log is more up-to-date than that of the candidate.**
+- Raft determines which of two logs is more up-to-date by comparing the index and term of the last entries in the logs.
+  - If the logs have last entries with different terms, then the log with the later term is more up-to-date.
+  - If the logs end with the same term, then whichever log is longer is more up-to-date.
+###### Committing entries from previous terms
