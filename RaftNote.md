@@ -151,3 +151,26 @@
   - If the logs have last entries with different terms, then the log with the later term is more up-to-date.
   - If the logs end with the same term, then whichever log is longer is more up-to-date.
 ###### Committing entries from previous terms
+-  A new leader cannot immediately conclude that an entry from a previous term is committed once it is stored on a majority of servers, and it can still be overwritten by a future leader.
+- To eliminate problems like the one in Figure 8, Raft never commits log entries from previous terms by counting replicas. Only log entries from the leader’s current term are committed by counting replicas
+##### 5.5 Follower and candidate crashes
+- If a follower or candidate crashes, then future RequestVote and AppendEntries RPCs sent to it will fail. Raft handles these failures by retrying indeﬁnitely;
+- if the crashed server restarts, then the RPC will complete successfully.
+- If a server crashes after completing an RPC but before responding, then it will receive the same RPC again after it restarts. Raft RPCs are idempotent, so this causes no harm.
+##### 5.6  Timing and availability
+-  Raft is that safety must not depend on timing
+- withouta steady leader, Raft cannotmake progress.
+- Leader election is the aspect of Raft where timing is most critical.
+-  Raft will be able to elect and maintain a steady leader as long as the system satisﬁes the following timing requirement:
+    - broadcastTime << electionTimeout << MTBF
+    - In this inequality **broadcastTime** is the average time it takes a server to send RPCs in parallel to every server in the cluster and receive their responses
+    - electionTimeout is the election timeout
+    -  and MTBF is the average time between failures for a single server.
+    - The **broadcast time** should be an order of **magnitude less** than the election timeout so that leaders can reliably send the heartbeat messages required to **keep followers from starting elections**
+    -  given the randomized approach used for election timeouts, this inequality also makes split votes unlikely
+    - The **election timeout** should be a few orders of **magnitude less** than MTBF so that the system makes **steady progress**
+-  the broadcast time may range from 0.5ms to 20ms, depending on storage technology
+- the election timeout is likely to be somewherebetween 10ms and 500ms
+- MTBFs are several months or more, which easily satisﬁes the timing requirement.
+#### Cluster membership changes
+- use a two-phase approach
